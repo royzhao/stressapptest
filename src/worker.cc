@@ -44,7 +44,9 @@
 #include <sys/ioctl.h>
 #include <linux/fs.h>
 // For asynchronous I/O
+#ifdef HAVE_LIBAIO_H
 #include <libaio.h>
+#endif
 
 #include <sys/syscall.h>
 
@@ -73,11 +75,6 @@ _syscall3(int, sched_getaffinity, pid_t, pid,
           unsigned int, len, cpu_set_t*, mask)
 _syscall3(int, sched_setaffinity, pid_t, pid,
           unsigned int, len, cpu_set_t*, mask)
-#endif
-
-// Linux aio syscalls.
-#if !defined(__NR_io_setup)
-#error "No aio headers inculded, please install libaio."
 #endif
 
 namespace {
@@ -147,14 +144,18 @@ static void *ThreadSpawnerGeneric(void *ptr) {
 void WorkerStatus::Initialize() {
   sat_assert(0 == pthread_mutex_init(&num_workers_mutex_, NULL));
   sat_assert(0 == pthread_rwlock_init(&status_rwlock_, NULL));
+#ifdef _POSIX_BARRIERS
   sat_assert(0 == pthread_barrier_init(&pause_barrier_, NULL,
                                        num_workers_ + 1));
+#endif
 }
 
 void WorkerStatus::Destroy() {
   sat_assert(0 == pthread_mutex_destroy(&num_workers_mutex_));
   sat_assert(0 == pthread_rwlock_destroy(&status_rwlock_));
+#ifdef _POSIX_BARRIERS
   sat_assert(0 == pthread_barrier_destroy(&pause_barrier_));
+#endif
 }
 
 void WorkerStatus::PauseWorkers() {
@@ -219,8 +220,10 @@ void WorkerStatus::RemoveSelf() {
   AcquireNumWorkersLock();
   // Decrement num_workers_ and reinitialize pause_barrier_, which we know isn't
   // in use because (status != PAUSE).
+#ifdef _POSIX_BARRIERS
   sat_assert(0 == pthread_barrier_destroy(&pause_barrier_));
   sat_assert(0 == pthread_barrier_init(&pause_barrier_, NULL, num_workers_));
+#endif
   --num_workers_;
   ReleaseNumWorkersLock();
 
@@ -399,7 +402,11 @@ bool WorkerThread::Work() {
 //   mask = 13 (1101b): cpu0, 2, 3
 bool WorkerThread::AvailableCpus(cpu_set_t *cpuset) {
   CPU_ZERO(cpuset);
+#ifdef HAVE_SCHED_GETAFFINITY
   return sched_getaffinity(getppid(), sizeof(*cpuset), cpuset) == 0;
+#else
+  return 0;
+#endif
 }
 
 
@@ -409,7 +416,11 @@ bool WorkerThread::AvailableCpus(cpu_set_t *cpuset) {
 //   mask = 13 (1101b): cpu0, 2, 3
 bool WorkerThread::CurrentCpus(cpu_set_t *cpuset) {
   CPU_ZERO(cpuset);
+#ifdef HAVE_SCHED_GETAFFINITY
   return sched_getaffinity(0, sizeof(*cpuset), cpuset) == 0;
+#else
+  return 0;
+#endif
 }
 
 
@@ -436,7 +447,11 @@ bool WorkerThread::BindToCpus(const cpu_set_t *thread_mask) {
               cpuset_format(&process_mask).c_str());
     return false;
   }
+#ifdef HAVE_SCHED_GETAFFINITY
   return (sched_setaffinity(gettid(), sizeof(*thread_mask), thread_mask) == 0);
+#else
+  return 0;
+#endif
 }
 
 
@@ -1791,7 +1806,12 @@ bool FileThread::PagePrepare() {
 
   // Init a local buffer if we need it.
   if (!page_io_) {
+#ifdef HAVE_POSIX_MEMALIGN
     int result = posix_memalign(&local_page_, 512, sat_->page_length());
+#else
+    local_page_ = memalign(512, sat_->page_length());
+    int result = (local_page_ == 0);
+#endif
     if (result) {
       logprintf(0, "Process Error: disk thread posix_memalign "
                    "returned %d (fail)\n",
@@ -2358,7 +2378,12 @@ bool NetworkSlaveThread::Work() {
   int64 loops = 0;
   // Init a local buffer for storing data.
   void *local_page = NULL;
+#ifdef HAVE_POSIX_MEMALIGN
   int result = posix_memalign(&local_page, 512, sat_->page_length());
+#else
+  local_page = memalign(512, sat_->page_length());
+  int result = (local_page == 0);
+#endif
   if (result) {
     logprintf(0, "Process Error: net slave posix_memalign "
                  "returned %d (fail)\n",
@@ -2459,7 +2484,11 @@ bool CpuCacheCoherencyThread::Work() {
       // Choose a datastructure in random and increment the appropriate
       // member in that according to the offset (which is the same as the
       // thread number.
+#ifdef HAVE_RAND_R
       int r = rand_r(&seed);
+#else
+      int r = rand();
+#endif
       r = cc_cacheline_count_ * (r / (RAND_MAX + 1.0));
       // Increment the member of the randomely selected structure.
       (cc_cacheline_data_[r].num[cc_thread_num_])++;
@@ -2521,7 +2550,9 @@ DiskThread::DiskThread(DiskBlockTable *block_table) {
   device_sectors_ = 0;
   non_destructive_ = 0;
 
+#ifdef HAVE_LIBAIO_H
   aio_ctx_ = 0;
+#endif
   block_table_ = block_table;
   update_block_table_ = 1;
 
@@ -2849,6 +2880,7 @@ bool DiskThread::DoWork(int fd) {
 // Return false if the IO is not set up.
 bool DiskThread::AsyncDiskIO(IoOp op, int fd, void *buf, int64 size,
                             int64 offset, int64 timeout) {
+#ifdef HAVE_LIBAIO_H
   // Use the Linux native asynchronous I/O interface for reading/writing.
   // A read/write consists of three basic steps:
   //    1. create an io context.
@@ -2957,6 +2989,9 @@ bool DiskThread::AsyncDiskIO(IoOp op, int fd, void *buf, int64 size,
   }
 
   return true;
+#else // !HAVE_LIBAIO_H
+  return false;
+#endif
 }
 
 // Write a block to disk.
@@ -3104,9 +3139,14 @@ bool DiskThread::Work() {
   }
 
   // Allocate a block buffer aligned to 512 bytes since the kernel requires it
-  // when using direst IO.
+  // when using direct IO.
+#ifdef HAVE_POSIX_MEMALIGN
   int memalign_result = posix_memalign(&block_buffer_, kBufferAlignment,
                               sat_->page_length());
+#else
+  block_buffer_ = memalign(kBufferAlignment, sat_->page_length());
+  int memalign_result = (block_buffer_ == 0);
+#endif
   if (memalign_result) {
     CloseDevice(fd);
     logprintf(0, "Process Error: Unable to allocate memory for buffers "
@@ -3116,6 +3156,7 @@ bool DiskThread::Work() {
     return false;
   }
 
+#ifdef HAVE_LIBAIO_H
   if (io_setup(5, &aio_ctx_)) {
     CloseDevice(fd);
     logprintf(0, "Process Error: Unable to create aio context for disk %s"
@@ -3124,12 +3165,15 @@ bool DiskThread::Work() {
     status_ = false;
     return false;
   }
+#endif
 
   bool result = DoWork(fd);
 
   status_ = result;
 
+#ifdef HAVE_LIBAIO_H
   io_destroy(aio_ctx_);
+#endif
   CloseDevice(fd);
 
   logprintf(9, "Log: Completed %d (disk %s): disk thread status %d, "

@@ -172,7 +172,14 @@ inline bool sat_sleep(time_t seconds) {
 //   error_num: an errno error code
 inline string ErrorString(int error_num) {
   char buf[256];
+#ifdef STRERROR_R_CHAR_P
   return string(strerror_r(error_num, buf, sizeof buf));
+#else
+  if (strerror_r(error_num, buf, sizeof buf))
+    return "unknown failure";
+  else
+    return string(buf);
+#endif
 }
 
 // Define handy constants here
