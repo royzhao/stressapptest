@@ -26,9 +26,13 @@
 #include <string>
 
 #ifdef HAVE_CONFIG_H  // Built using autoconf
+#ifdef __ANDROID__
+#include "stressapptest_config_android.h"
+#else
 #include "stressapptest_config.h"
-using namespace std;
 using namespace __gnu_cxx;
+#endif
+using namespace std;
 
 typedef signed long long   int64;
 typedef signed int         int32;
