@@ -77,6 +77,8 @@ OsLayer::OsLayer() {
 
   has_clflush_ = false;
   has_sse2_ = false;
+
+  use_flush_page_cache_ = false;
 }
 
 // OsLayer cleanup.
@@ -166,6 +168,46 @@ void OsLayer::GetFeatures() {
 #else
 #warning "Unsupported CPU type: unable to determine feature set."
 #endif
+}
+
+
+// Enable FlushPageCache to be functional instead of a NOP.
+void OsLayer::ActivateFlushPageCache(void) {
+  logprintf(9, "Log: page cache will be flushed as needed\n");
+  use_flush_page_cache_ = true;
+}
+
+// Flush the page cache to ensure reads come from the disk.
+bool OsLayer::FlushPageCache(void) {
+  if (!use_flush_page_cache_)
+    return true;
+
+  // First, ask the kernel to write the cache to the disk.
+  sync();
+
+  // Second, ask the kernel to empty the cache by writing "1" to
+  // "/proc/sys/vm/drop_caches".
+  static const char *drop_caches_file = "/proc/sys/vm/drop_caches";
+  int dcfile = open(drop_caches_file, O_WRONLY);
+  if (dcfile < 0) {
+    int err = errno;
+    string errtxt = ErrorString(err);
+    logprintf(3, "Log: failed to open %s - err %d (%s)\n",
+              drop_caches_file, err, errtxt.c_str());
+    return false;
+  }
+
+  ssize_t bytes_written = write(dcfile, "1", 1);
+  close(dcfile);
+
+  if (bytes_written != 1) {
+    int err = errno;
+    string errtxt = ErrorString(err);
+    logprintf(3, "Log: failed to write %s - err %d (%s)\n",
+              drop_caches_file, err, errtxt.c_str());
+    return false;
+  }
+  return true;
 }
 
 

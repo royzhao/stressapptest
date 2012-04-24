@@ -1600,15 +1600,21 @@ void FileThread::SetFile(const char *filename_init) {
 
 // Open the file for access.
 bool FileThread::OpenFile(int *pfile) {
-  int fd = open(filename_.c_str(),
-                O_RDWR | O_CREAT | O_SYNC | O_DIRECT,
-                0644);
+  bool no_O_DIRECT = false;
+  int flags = O_RDWR | O_CREAT | O_SYNC;
+  int fd = open(filename_.c_str(), flags | O_DIRECT, 0644);
+  if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
+    no_O_DIRECT = true;
+    fd = open(filename_.c_str(), flags, 0644); // Try without O_DIRECT
+  }
   if (fd < 0) {
     logprintf(0, "Process Error: Failed to create file %s!!\n",
               filename_.c_str());
     pages_copied_ = 0;
     return false;
   }
+  if (no_O_DIRECT)
+    os_->ActivateFlushPageCache(); // Not using O_DIRECT fixed EINVAL
   *pfile = fd;
   return true;
 }
@@ -1679,7 +1685,7 @@ bool FileThread::WritePages(int fd) {
     if (!result)
       return false;
   }
-  return true;
+  return os_->FlushPageCache(); // If O_DIRECT worked, this will be a NOP.
 }
 
 // Copy data from file into memory block.
@@ -2691,14 +2697,20 @@ bool DiskThread::SetParameters(int read_block_size,
 
 // Open a device, return false on failure.
 bool DiskThread::OpenDevice(int *pfile) {
-  int fd = open(device_name_.c_str(),
-                O_RDWR | O_SYNC | O_DIRECT | O_LARGEFILE,
-                0);
+  bool no_O_DIRECT = false;
+  int flags = O_RDWR | O_SYNC | O_LARGEFILE;
+  int fd = open(device_name_.c_str(), flags | O_DIRECT, 0);
+  if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
+    no_O_DIRECT = true;
+    fd = open(device_name_.c_str(), flags, 0); // Try without O_DIRECT
+  }
   if (fd < 0) {
     logprintf(0, "Process Error: Failed to open device %s (thread %d)!!\n",
               device_name_.c_str(), thread_num_);
     return false;
   }
+  if (no_O_DIRECT)
+    os_->ActivateFlushPageCache();
   *pfile = fd;
 
   return GetDiskSize(fd);
@@ -2858,6 +2870,8 @@ bool DiskThread::DoWork(int fd) {
 
       in_flight_sectors_.push(block);
     }
+    if (!os_->FlushPageCache()) // If O_DIRECT worked, this will be a NOP.
+      return false;
 
     // Verify blocks on disk.
     logprintf(20, "Log: Read phase for disk %s (thread %d).\n",
