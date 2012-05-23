@@ -192,7 +192,9 @@
 #define STRESSAPPTEST_OS_LINUX /**/
 
 /* Timestamp when ./configure was executed */
-#define STRESSAPPTEST_TIMESTAMP "saa @ saaws2.mtv.corp.google.com on Tue Feb 28 16:53:44 PST 2012"
+#ifndef STRESSAPPTEST_TIMESTAMP
+#define STRESSAPPTEST_TIMESTAMP "Android version"
+#endif
 
 /* Define to 1 if you can safely include both <sys/time.h> and <time.h>. */
 #define TIME_WITH_SYS_TIME 1
