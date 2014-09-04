@@ -23,7 +23,7 @@ LOCAL_CFLAGS := -DHAVE_CONFIG_H -DANDROID -DNDEBUG -UDEBUG -DCHECKOPTS
 
 LOCAL_C_INCLUDES := \
 	bionic \
-	external/stlport/stlport
+	external/stlport/stlport 
 
 LOCAL_CPP_EXTENSION := .cc
 
